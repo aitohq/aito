@@ -1,0 +1,149 @@
+name: publish
+
+# Builds and publishes the public Aito Docker image.
+#
+# Inputs: the obfuscated free-tier JAR is downloaded from a matching
+# AitoDotAI/aito-core release (tag = this workflow's ref_name or
+# workflow_dispatch input).
+#
+# Outputs:
+#   - ghcr.io/aitohq/aito:<version> + :latest          (primary)
+#   - public.ecr.aws/aitoai/aito:<version> + :latest   (mirror, via OIDC)
+#
+# To release: tag this repo (v0.1.0) AFTER the matching aito-core
+# release exists; or use workflow_dispatch with an explicit version.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'aito-core tag to package (e.g. v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  id-token: write   # OIDC for ECR Public role assumption
+  contents: read
+  packages: write   # GHCR push (same-org)
+
+env:
+  CORE_REPO: AitoDotAI/aito-core
+  ECR_PUBLIC_ROLE: arn:aws:iam::880668873263:role/aitoai/bots/role/github-ecr-public-pusher
+  ECR_PUBLIC_REPO: public.ecr.aws/aitoai/aito
+  GHCR_REPO: ghcr.io/aitohq/aito
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve target version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: ${VERSION}"
+
+      - name: Fetch obfuscated JAR from aito-core release
+        env:
+          GH_TOKEN: ${{ secrets.AITO_CORE_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          # AITO_CORE_RELEASE_TOKEN is a PAT with read access to AitoDotAI/aito-core
+          # releases. Only required if aito-core is a private repo; if public,
+          # GITHUB_TOKEN works.
+          VERSION="${{ steps.ver.outputs.version }}"
+          mkdir -p ./build
+          gh release download "${VERSION}" \
+            --repo "${CORE_REPO}" \
+            --pattern 'aitoai-free-obf.jar' \
+            --dir ./build/
+
+          # Verify checksum if the .sha256 sidecar is present.
+          if gh release download "${VERSION}" --repo "${CORE_REPO}" \
+               --pattern 'aitoai-free-obf.jar.sha256' --dir ./build/ 2>/dev/null; then
+            (cd ./build && sha256sum -c aitoai-free-obf.jar.sha256)
+          fi
+
+          # Dockerfile expects the JAR at ./aitoai-free.jar in the context.
+          cp ./build/aitoai-free-obf.jar ./aitoai-free.jar
+
+      - name: Build image
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          docker build \
+            -t "aito-build:${GITHUB_SHA}" \
+            -t "aito-build:${VERSION}" \
+            .
+
+      - name: Smoke test
+        run: |
+          # Boot the image with no license key, hit the health endpoint,
+          # then stop. Catches obvious packaging regressions before pushing.
+          docker run -d --name aito-smoke -p 9005:9005 "aito-build:${GITHUB_SHA}"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9005/status >/dev/null 2>&1; then
+              echo "Server responded after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          # Final health check + free-mode confirmation
+          curl -fsS http://127.0.0.1:9005/status/limits | jq .
+          docker logs aito-smoke 2>&1 | grep -E '(Free Mode|Licensed Mode)' || true
+          docker rm -f aito-smoke
+
+      # ---------- GHCR ----------
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to GHCR
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:${VERSION}"
+          docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:latest"
+          docker push "${GHCR_REPO}:${VERSION}"
+          docker push "${GHCR_REPO}:latest"
+
+      # ---------- ECR Public ----------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ECR_PUBLIC_ROLE }}
+          aws-region: us-east-1
+          role-session-name: aitohq-aito-publish
+
+      - name: Login to ECR Public
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      - name: Push to ECR Public
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:${VERSION}"
+          docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:latest"
+          docker push "${ECR_PUBLIC_REPO}:${VERSION}"
+          docker push "${ECR_PUBLIC_REPO}:latest"
+
+      - name: Summary
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          {
+            echo "## Published"
+            echo ""
+            echo "- \`docker pull ${GHCR_REPO}:${VERSION}\`"
+            echo "- \`docker pull ${ECR_PUBLIC_REPO}:${VERSION}\`"
+            echo ""
+            echo "Both :latest tags also updated."
+          } >> "$GITHUB_STEP_SUMMARY"
