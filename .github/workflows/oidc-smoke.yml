@@ -1,0 +1,38 @@
+name: oidc-smoke
+
+# Verifies that the github-ecr-public-pusher OIDC role created by the
+# aitoai-aws aitoai-github-ecr-public-pusher stack can be assumed from
+# this repo. Run via workflow_dispatch before any real publish.
+#
+# Expected output: `aws sts get-caller-identity` prints an ARN of the
+# form arn:aws:sts::880668873263:assumed-role/github-ecr-public-pusher/...
+# If you get AssumeRoleWithWebIdentity errors instead, see
+# aitoai-aws/ecs/README-ecr-public.md (likely cause: GitHub rotated
+# OIDC thumbprints).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  whoami:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::880668873263:role/aitoai/bots/role/github-ecr-public-pusher
+          aws-region: us-east-1
+          role-session-name: oidc-smoke-test
+
+      - name: Confirm assumed identity
+        run: aws sts get-caller-identity
+
+      - name: Confirm ECR Public auth works
+        run: |
+          # Confirms the role has ecr-public:GetAuthorizationToken.
+          aws ecr-public get-authorization-token --region us-east-1 \
+            --query 'authorizationData.expiresAt' --output text
