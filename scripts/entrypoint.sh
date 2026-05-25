@@ -36,15 +36,17 @@ fi
 if [ "${AITO_ROW_LIMIT_PER_TABLE}" = "0" ] && [ "${AITO_ROW_LIMIT_TOTAL}" = "0" ]; then
   echo ""
   echo "======================================"
-  echo "  Aito Core - Licensed Mode"
+  echo "  Aito - Licensed Mode"
+  echo "  License terms: /EULA.txt"
   echo "======================================"
   echo ""
 else
   echo ""
   echo "======================================"
-  echo "  Aito Core - Free Mode"
+  echo "  Aito - Free Mode"
   echo "  ${AITO_ROW_LIMIT_PER_TABLE} rows/table, ${AITO_ROW_LIMIT_TOTAL} total"
-  echo "  Get a license at https://aito.ai"
+  echo "  Production License: https://aito.ai/docker"
+  echo "  License terms:      /EULA.txt"
   echo "======================================"
   echo ""
 fi

@@ -1,0 +1,241 @@
+AITO FREE-TIER LICENSE AGREEMENT
+Version 1.0 — Effective 2026-05-24
+
+This agreement ("Agreement") is between you ("Licensee") and Episto Oy
+(Business ID FI34337429), Putouskuja 6 a 2, 01600 Vantaa, Finland,
+operating under the trade name "Aito" ("Aito"), and governs use of
+the Aito predictive database container image and obfuscated Java
+archive distributed at ghcr.io/aitohq/aito and public.ecr.aws/aitoai/aito
+("Software"). By downloading, running, or otherwise using the Software,
+Licensee agrees to be bound by this Agreement.
+
+This Agreement governs the self-hosted Software only. Aito's cloud
+service at console.aito.ai and similar endpoints is governed by the
+separate Aito Terms of Service at https://aito.ai/terms-of-service/.
+
+1. DEFINITIONS
+
+   "Software" means the container image and any JAR, scripts,
+   documentation, or related materials Aito distributes under the
+   names "ghcr.io/aitohq/aito" or "public.ecr.aws/aitoai/aito".
+
+   "Production License" means a paid subscription license obtained
+   from Aito at https://console.aito.ai.
+
+   "Government Entity" means any national, state, provincial,
+   regional, county, city, or other governmental body or agency, or
+   any contractor primarily working on behalf of such a body.
+
+2. FREE-TIER USE (NO PAYMENT REQUIRED)
+
+   The use of the Software without a Production License is permitted
+   for:
+
+   (a) personal use, including hobby projects with no commercial purpose;
+
+   (b) software development, testing, debugging, and continuous
+       integration that does not directly serve paying customers or
+       end-users;
+
+   (c) up to ninety (90) days of evaluation for the purpose of
+       deciding whether to acquire a Production License;
+
+   (d) members of an educational organization enrolled in a classroom
+       learning environment for academic or research in not-for-profit
+       projects;
+
+   (e) non-commercial open source projects; and
+
+   (f) use in a commercial undertaking with fewer than 250 employees
+       and less than US $10,000,000 (or equivalent local currency) in
+       annual revenue.
+
+   Government Entities shall not use the Software without a Production
+   License.
+
+   [Provenance: §2 is adapted from Docker Subscription Service
+   Agreement §4.2(a). The 250-employee / $10M-revenue threshold is
+   Docker's exact figure — chosen here because it is the most
+   widely-tested commercial-use threshold in the industry and
+   matches the buyer profile Aito targets.]
+
+3. PRODUCTION LICENSE REQUIRED
+
+   All use of the Software not permitted under Section 2 requires a
+   Production License. This includes, without limitation:
+
+   (a) deployment to systems that serve end-users, customers, or
+       employees of Licensee's business;
+
+   (b) deployment to systems that participate in a revenue-generating
+       workflow;
+
+   (c) any use by a commercial undertaking that does not meet the
+       Section 2(f) thresholds; and
+
+   (d) any use by a Government Entity.
+
+   To acquire a Production License, visit https://console.aito.ai
+   or contact sales@aito.ai.
+
+4. RESTRICTIONS
+
+   Licensee shall not:
+
+   (a) use the Software in a manner that exceeds the permissions
+       granted by Section 2 without a Production License;
+
+   (b) move, change, disable, or circumvent the row-limit
+       enforcement, license-validation, telemetry, or any other
+       technical measure in the Software, by any means including but
+       not limited to overriding the container entrypoint, modifying
+       environment variables that the Software reads, running the
+       embedded JAR directly, reverse-engineering the obfuscated
+       bytecode, or modifying the Software;
+
+       [Provenance: §4(b) is adapted from Elastic License 2.0 clause 2.
+       Elastic's exact text is: "You may not move, change, disable,
+       or circumvent the license key functionality in the software,
+       and you may not remove or obscure any functionality in the
+       software that is protected by the license key." Our version
+       enumerates Aito's specific enforcement mechanisms.]
+
+   (c) alter, remove, or obscure any licensing, copyright, or other
+       notices of the licensor in the Software;
+
+       [Provenance: §4(c) is verbatim Elastic License 2.0 clause 3.]
+
+   (d) sublicense, sell, rent, lease, or otherwise transfer the
+       Software to a third party except as part of a Production
+       License agreement with Aito.
+
+5. TELEMETRY
+
+   5.1 The Software transmits operational metadata to Aito on
+       startup and periodically thereafter ("Telemetry"), in the
+       following categories:
+
+       (a) Software identification — for example: a randomly
+           generated installation identifier (UUID), Software
+           version, image digest, build hash.
+
+       (b) License status — for example: whether an
+           AITO_LICENSE_KEY is configured, whether the key
+           validates successfully.
+
+       (c) Aggregate usage — for example: total row counts,
+           table counts, query counts, request rates. Aggregate
+           figures only; not individual rows, queries, or
+           identifiers contained in Licensee's data.
+
+       (d) Host environment — for example: Java runtime version,
+           operating system name, CPU count, total memory, disk
+           size, container runtime, orchestrator hints, process
+           uptime.
+
+       (e) Connectivity — for example: the originating IP address
+           of the Software as observed by Aito's servers, and
+           geographic / network metadata derived therefrom.
+
+   5.2 The specific fields currently transmitted in each category
+       are published at https://aito.ai/privacy-policy/. Aito may
+       add or remove fields within these categories from time to
+       time; material changes will be reflected in that document
+       and, if they alter the categories themselves, in a new
+       version of this Agreement.
+
+   5.3 Telemetry is processed for the following legitimate
+       business interests of Aito within the meaning of GDPR
+       Article 6(1)(f):
+       (a) license enforcement and pricing determination,
+           including verifying that the instance shape (size,
+           capacity, usage volume) matches any acquired Production
+           License tier;
+       (b) detection of Production Use of unlicensed Software;
+       (c) contact regarding licensing or support opportunities;
+       (d) improvement of the Software.
+
+   5.4 Aito does NOT collect through Telemetry, under any
+       category: the contents of rows or columns; query text or
+       parameters; schema names; user-provided table or column
+       names; usernames; API keys; or any data stored by Licensee
+       in the Software.
+
+   5.5 Telemetry data is retained for thirteen (13) months from
+       collection. Licensee may request deletion of records
+       associated with a particular IP address or instance UUID by
+       emailing privacy@aito.ai (alias to support@aito.ai).
+
+   5.6 Licensee may not disable, intercept, or modify Telemetry
+       collection (see Section 4(b)).
+
+6. INTELLECTUAL PROPERTY
+
+   The Software is licensed, not sold. Aito retains all right, title,
+   and interest in and to the Software, including all intellectual
+   property rights therein. Third-party open-source components
+   incorporated in the Software are licensed under their respective
+   terms; see the NOTICE file bundled in the Software.
+
+7. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+   NON-INFRINGEMENT.
+
+8. LIMITATION OF LIABILITY
+
+   TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT
+   SHALL AITO BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
+   CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS OR
+   REVENUE, ARISING FROM OR IN CONNECTION WITH USE OF THE SOFTWARE.
+   AITO'S AGGREGATE TOTAL LIABILITY UNDER THIS AGREEMENT SHALL NOT
+   EXCEED THE AMOUNT PAID BY LICENSEE TO AITO UNDER THIS AGREEMENT
+   DURING THE LAST SIX (6) MONTHS, AND, FOR FREE-TIER USE WHERE NO
+   AMOUNT HAS BEEN PAID, SHALL BE LIMITED TO ONE HUNDRED EUROS
+   (EUR 100). NOTHING IN THIS AGREEMENT LIMITS LIABILITY FOR
+   (i) DEATH OR PERSONAL INJURY CAUSED BY NEGLIGENCE; (ii) FRAUD OR
+   FRAUDULENT MISREPRESENTATION; OR (iii) ANY OTHER LIABILITY WHICH
+   CANNOT BE LAWFULLY EXCLUDED.
+
+   [Provenance: the "amount paid in last 6 months" formula matches
+   Aito's existing Terms of Service for the cloud service, keeping
+   the two agreements consistent.]
+
+9. TERMINATION
+
+   This Agreement is effective until terminated. It terminates
+   automatically and without notice upon any breach by Licensee of
+   Sections 2, 3, 4, or 5. Upon termination, Licensee shall cease all
+   use of the Software. Sections 4, 6, 7, 8, and 10 survive
+   termination.
+
+10. GOVERNING LAW AND DISPUTE RESOLUTION
+
+    This Agreement is governed exclusively by the laws of Finland
+    without reference to its choice of law rules. Any dispute,
+    controversy, or claim arising out of or relating to this
+    Agreement, or the breach, termination, or validity thereof, shall
+    be finally settled by arbitration in accordance with the Rules
+    for Expedited Arbitration of the Finnish Central Chamber of
+    Commerce. The seat of arbitration shall be Helsinki, Finland, and
+    the language of arbitration shall be English. Notwithstanding the
+    foregoing, either party may pursue claims for outstanding
+    receivables in the courts of the other party's domicile. This
+    Section is subject to any mandatory consumer-protection rules in
+    Licensee's country of residence that cannot be waived by
+    agreement.
+
+    [Provenance: arbitration clause mirrors Aito's existing Terms of
+    Service for the cloud service.]
+
+11. ENTIRE AGREEMENT
+
+    This Agreement is the entire agreement between the parties
+    regarding the Software and supersedes all prior agreements,
+    communications, and representations regarding it.
+
+Commercial licensing: sales@aito.ai (or support@aito.ai)
+General contact:       support@aito.ai
+Privacy requests:      privacy@aito.ai (alias to support@aito.ai)

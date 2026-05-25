@@ -19,6 +19,7 @@ RUN apk add --no-cache bash curl jq openssl && \
 COPY aitoai-free.jar /opt/aitoai/aitoai.jar
 COPY scripts/entrypoint.sh /opt/aitoai/entrypoint.sh
 COPY scripts/validate-license.sh /opt/aitoai/validate-license.sh
+COPY EULA.txt /EULA.txt
 RUN chmod +x /opt/aitoai/entrypoint.sh /opt/aitoai/validate-license.sh
 
 ENV PORT=9005 \
