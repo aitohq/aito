@@ -190,6 +190,65 @@ else
     bad "the startup banner does not report Free Mode"
 fi
 
+# --------------------------- 8b. the engine actually works ------------------
+# Auth and row limits can all be correct on an image whose query engine is
+# broken. The JAR is run through ProGuard before it is published, and
+# obfuscation is exactly what breaks reflection-driven code paths — so the
+# smoke test exercises a real feature surface, not just /status/limits.
+#
+# Both checks below return 500 on v1.0.1: it has no Vector column type and
+# rejects a `$nearest` where-clause outright. They are load-bearing.
+AUTH=(); [ -n "${RW:-}" ] && AUTH=(-H "x-api-key: ${RW}")
+JQ=1; command -v jq >/dev/null 2>&1 || JQ=0
+
+if [ "$JQ" = "0" ]; then
+    bad "jq is not installed, so the engine checks cannot run — not treated as a pass"
+else
+    sc="$(curl -s -o /dev/null -w '%{http_code}' -X PUT "${AUTH[@]}" \
+        -H 'content-type: application/json' \
+        -d '{"type":"collection","columns":{"id":{"type":"Int"},"cat":{"type":"String"},"vec":{"type":"Vector","dimensions":2,"similarity":"cosine"}}}' \
+        "http://127.0.0.1:${PORT}/api/v2/schema/smoke_vec" 2>/dev/null)"
+    bc="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${AUTH[@]}" \
+        -H 'content-type: application/json' \
+        -d '[{"id":1,"cat":"a","vec":[1.0,0.0]},{"id":2,"cat":"b","vec":[1.0,1.0]},{"id":3,"cat":"a","vec":[0.0,1.0]},{"id":4,"cat":"b","vec":[-1.0,0.0]},{"id":5,"cat":"a","vec":[1.0,0.5]}]' \
+        "http://127.0.0.1:${PORT}/api/v2/data/smoke_vec/batch" 2>/dev/null)"
+    if [ "$sc" = "200" ] && [ "$bc" = "200" ]; then
+        ok "a v2 collection with a Vector column accepts a batch insert"
+    else
+        bad "could not set up the vector collection (schema ${sc}, batch ${bc})"
+    fi
+
+    # Ordering AND the similarity value: cosine of a unit [1,0] against itself
+    # is exactly 1.0, and the expected order is eyeball-verifiable from the data.
+    q="$(curl -s -X POST "${AUTH[@]}" -H 'content-type: application/json' \
+        -d '{"from":"smoke_vec","where":{"$nearest":{"near":{"vec":[1.0,0.0]},"limit":10}},"select":["id","$similarity"]}' \
+        "http://127.0.0.1:${PORT}/api/v2/_query" 2>/dev/null)"
+    order="$(printf '%s' "$q" | jq -r '[.hits[].id] | join(",")' 2>/dev/null)"
+    top="$(printf '%s' "$q"   | jq -r '.hits[0]["$similarity"] // empty' 2>/dev/null)"
+    if [ "$order" = "1,5,2,3,4" ] && [ "${top%%.*}" = "1" ]; then
+        ok "\$nearest ranks by cosine correctly (1,5,2,3,4; top similarity ${top})"
+    else
+        bad "\$nearest returned order='${order:-?}' topSimilarity='${top:-?}', expected 1,5,2,3,4 / 1.0"
+    fi
+
+    # $semantic steers a prediction. Asserted as a PAIR that must FLIP: a query
+    # vector in cat=a territory must predict "a", and one in cat=b territory
+    # must predict "b". A single direction could be satisfied by a server that
+    # always returns the same answer.
+    pred() {
+        curl -s -X POST "${AUTH[@]}" -H 'content-type: application/json' \
+          -d "{\"from\":\"smoke_vec\",\"predict\":\"cat\",\"select\":[\"\$value\",\"\$p\"],\"where\":{\"vec\":{\"\$semantic\":{\"near\":[$1,$2],\"k\":2,\"weight\":1.0}}}}" \
+          "http://127.0.0.1:${PORT}/api/v2/_query" 2>/dev/null | jq -r '.hits[0]["$value"] // empty' 2>/dev/null
+    }
+    pa="$(pred 1.0 0.0)"
+    pb="$(pred -1.0 0.0)"
+    if [ "$pa" = "a" ] && [ "$pb" = "b" ]; then
+        ok "\$semantic steers a prediction (near a -> 'a', near b -> 'b')"
+    else
+        bad "\$semantic did not steer the prediction: near-a gave '${pa:-?}', near-b gave '${pb:-?}'"
+    fi
+fi
+
 # ------------------------------------- 9. keys survive a restart ------------
 docker restart "$NAME" >/dev/null 2>&1
 for _ in $(seq 1 60); do

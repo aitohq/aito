@@ -133,7 +133,7 @@ longer holds a second copy of the runtime either. On a `v*` tag push (or
 1. Checks out `docker/free/` from the matching [AitoDotAI/aito-core](https://github.com/AitoDotAI/aito-core) tag, so the image cannot disagree with the code that was released.
 2. Downloads the obfuscated free-tier JAR from that release and verifies its checksum.
 3. Builds a thin Alpine + JRE 17 image around it.
-4. Runs `scripts/smoke-test.sh`, which asserts that authentication is enforced, that the generated keys work and persist across a restart, that the read-only key cannot write, that the SQL port is listening, that the free-tier limits are the documented ones, and that `AITO_LICENSE_KEY` is actually consumed.
+4. Runs `scripts/smoke-test.sh`, which asserts that authentication is enforced, that the generated keys work and persist across a restart, that the read-only key cannot write, that the SQL port is listening, that the free-tier limits are the documented ones, that `AITO_LICENSE_KEY` is actually consumed, and that the query engine works — a v2 collection with a `Vector` column, `$nearest` ranking by cosine, and `$semantic` steering a prediction. The JAR is obfuscated before release, and obfuscation is what breaks reflection-driven code paths, so the test exercises a real feature surface rather than only a status endpoint.
 5. Pushes to `ghcr.io/aitohq/aito:<version>` and `public.ecr.aws/aitoai/aito:<version>`, moving `:latest` only if this is the highest version published.
 
 `1.0.1` was built from a copy of the runtime kept in this repo. That copy drifted
