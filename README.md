@@ -33,8 +33,37 @@ internet. So it does not run unauthenticated. The keys are written to
 `/io/state/.aito-api-keys` and reused on every later boot, so they survive a
 restart as long as you keep the volume.
 
+### Getting the key later
+
+**That banner prints on first boot only.** A container started on a volume that
+already has keys reuses them and prints nothing, so the log is not somewhere to
+keep the only copy of a credential — and it disappears with `docker rm`. The
+keys live in the volume, which is the durable source:
+
 ```bash
-export AITO_KEY=<the read-write key from the log>
+# while the container exists
+docker exec aito cat /io/state/.aito-api-keys
+
+# even if the container is gone — the volume is enough
+docker run --rm -v aito-state:/io/state alpine cat /io/state/.aito-api-keys
+```
+
+**For anything you intend to keep running, pin the keys instead of having them
+generated**, and hold them wherever you already hold secrets:
+
+```bash
+docker run -d --name aito \
+  -e READ_WRITE_APIKEY="$(cat ./rw.key)" \
+  -e APIKEY="$(cat ./ro.key)" \
+  -p 9005:9005 -p 5432:5432 -v aito-state:/io/state \
+  ghcr.io/aitohq/aito:latest
+```
+
+Pinned keys are honoured as-is and nothing is generated, so there is no banner
+to catch and no retrieval step at all.
+
+```bash
+export AITO_KEY=<the read-write key>
 
 # Insert a row
 curl -X POST http://localhost:9005/api/v1/data/companies \
@@ -107,7 +136,8 @@ The image phones home to `console.aito.ai/public/licenses/validate` on startup. 
 | `AITO_LICENSE_API` | `https://console.aito.ai` | License validation endpoint |
 | `AITO_LICENSE_CACHE_FRESH_SECONDS` | `86400` (24h) | Skip-network window |
 | `AITO_LICENSE_CACHE_MAX_AGE_SECONDS` | `604800` (7d) | Hard cache TTL |
-| `AITO_LICENSE_TIMEOUT` | `60` | Seconds to wait for validation before starting in free mode |
+| `AITO_LICENSE_TIMEOUT` | `5` | Per-request timeout for the validation call |
+| `AITO_LICENSE_STARTUP_TIMEOUT` | `60` | Seconds to wait for validation before starting in free mode |
 
 ## Upgrading from 1.0.1
 
@@ -115,10 +145,12 @@ Two things change, and the first one will break client code that predates it:
 
 - **Authentication is on.** `1.0.1` shipped with `DISABLE_API_KEY_AUTH=true`, so
   any caller that could reach the port had full read-write access, including
-  `DROP TABLE`. Requests now need `x-api-key`. Read the generated key out of
-  `docker logs`, or pin your own with `-e READ_WRITE_APIKEY=…`, or — for a
-  throwaway local container only — set `-e AITO_DISABLE_AUTH=true` to keep the
-  old behaviour.
+  `DROP TABLE`. Requests now need `x-api-key`. For anything you keep running,
+  pin your own keys with `-e READ_WRITE_APIKEY=… -e APIKEY=…`; otherwise read
+  the generated pair out of the volume with
+  `docker exec aito cat /io/state/.aito-api-keys` (see *Getting the key later* —
+  the startup banner prints on first boot only). For a throwaway local container,
+  `-e AITO_DISABLE_AUTH=true` keeps the old behaviour.
 - **`AITO_LICENSE_KEY` works.** In `1.0.1` setting it left the container running
   with nothing listening: the entrypoint blocked forever on the licence check
   and the server never started. If you tried a licence key against `1.0.1` and
