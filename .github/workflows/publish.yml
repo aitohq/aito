@@ -59,8 +59,11 @@ jobs:
           else
             VERSION="${GITHUB_REF_NAME}"
           fi
-          # The git tag carries a leading v; the image tag does not, matching
-          # the 1.0.1 already published.
+          # The image tag KEEPS the leading v, matching what is already on both
+          # registries: public.ecr.aws/aitoai/aito carries v1.0.1, v1.0.0 and
+          # v0.0.1-rc1 (read from the registry, not assumed). NUM is the bare
+          # semver, used only for the version LABEL and for version comparison,
+          # where a leading v would break `sort -V`.
           NUM="${VERSION#v}"
           case "$NUM" in
             [0-9]*.[0-9]*.[0-9]*) ;;
@@ -68,7 +71,7 @@ jobs:
           esac
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "num=${NUM}" >> "$GITHUB_OUTPUT"
-          echo "Publishing ${VERSION} as image tag ${NUM}"
+          echo "Publishing ${VERSION} as image tag ${VERSION} (semver ${NUM})"
 
       # The runtime — Dockerfile, entrypoint, licence validation — comes from
       # aito-core at this exact tag, so the published image cannot disagree
@@ -179,9 +182,9 @@ jobs:
       - name: Push to GHCR
         run: |
           set -euo pipefail
-          NUM="${{ steps.ver.outputs.num }}"
-          docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:${NUM}"
-          docker push "${GHCR_REPO}:${NUM}"
+          VERSION="${{ steps.ver.outputs.version }}"
+          docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:${VERSION}"
+          docker push "${GHCR_REPO}:${VERSION}"
           if [ "${{ steps.latest.outputs.move }}" = "yes" ]; then
             docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:latest"
             docker push "${GHCR_REPO}:latest"
@@ -203,9 +206,9 @@ jobs:
       - name: Push to ECR Public
         run: |
           set -euo pipefail
-          NUM="${{ steps.ver.outputs.num }}"
-          docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:${NUM}"
-          docker push "${ECR_PUBLIC_REPO}:${NUM}"
+          VERSION="${{ steps.ver.outputs.version }}"
+          docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:${VERSION}"
+          docker push "${ECR_PUBLIC_REPO}:${VERSION}"
           if [ "${{ steps.latest.outputs.move }}" = "yes" ]; then
             docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:latest"
             docker push "${ECR_PUBLIC_REPO}:latest"
@@ -213,12 +216,13 @@ jobs:
 
       - name: Summary
         run: |
+          VERSION="${{ steps.ver.outputs.version }}"
           NUM="${{ steps.ver.outputs.num }}"
           {
-            echo "## Published ${NUM}"
+            echo "## Published ${VERSION}"
             echo
-            echo "- \`docker pull ${GHCR_REPO}:${NUM}\`"
-            echo "- \`docker pull ${ECR_PUBLIC_REPO}:${NUM}\`"
+            echo "- \`docker pull ${GHCR_REPO}:${VERSION}\`"
+            echo "- \`docker pull ${ECR_PUBLIC_REPO}:${VERSION}\`"
             echo
             if [ "${{ steps.latest.outputs.move }}" = "yes" ]; then
               echo ":latest moved to ${NUM} — ${{ steps.latest.outputs.why }}."
