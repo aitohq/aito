@@ -2,16 +2,26 @@ name: publish
 
 # Builds and publishes the public Aito Docker image.
 #
-# Inputs: the obfuscated free-tier JAR is downloaded from a matching
-# AitoDotAI/aito-core release (tag = this workflow's ref_name or
-# workflow_dispatch input).
+# THE IMAGE IS BUILT FROM aito-core's docker/free/ AT THE RELEASE TAG — not
+# from a copy in this repository. The copy that used to live here drifted, and
+# the drift is what shipped v1.0.1 with authentication switched off:
 #
-# Outputs:
-#   - ghcr.io/aitohq/aito:<version> + :latest          (primary)
-#   - public.ecr.aws/aitoai/aito:<version> + :latest   (mirror, via OIDC)
+#     this repo's Dockerfile      aito-core docker/free/Dockerfile
+#     KEY_VALIDATION=DISABLED     KEY_VALIDATION=LOCAL
+#     DISABLE_API_KEY_AUTH=true   (absent — keys generated on first boot)
+#     EXPOSE 9005                 EXPOSE 9005 5432
 #
-# To release: tag this repo (v0.1.0) AFTER the matching aito-core
-# release exists; or use workflow_dispatch with an explicit version.
+# So this repo now owns the release process and the public metadata, and
+# aito-core owns the runtime. There is one place for a security default to
+# live, and it is next to the code it protects.
+#
+# Inputs:  the obfuscated free-tier JAR and docker/free/ from the matching
+#          AitoDotAI/aito-core release/tag.
+# Outputs: ghcr.io/aitohq/aito:<version> (+ :latest, if it is the highest)
+#          public.ecr.aws/aitoai/aito:<version> (+ :latest, likewise)
+#
+# To release: tag this repo (v2.11.0) AFTER the matching aito-core release
+# exists, or use workflow_dispatch with an explicit version.
 
 on:
   push:
@@ -19,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'aito-core tag to package (e.g. v0.1.0)'
+        description: 'aito-core tag to package (e.g. v2.11.0)'
         required: true
         type: string
 
@@ -43,61 +53,87 @@ jobs:
       - name: Resolve target version
         id: ver
         run: |
+          set -euo pipefail
           if [ -n "${{ inputs.version }}" ]; then
             VERSION="${{ inputs.version }}"
           else
             VERSION="${GITHUB_REF_NAME}"
           fi
+          # The git tag carries a leading v; the image tag does not, matching
+          # the 1.0.1 already published.
+          NUM="${VERSION#v}"
+          case "$NUM" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::'${VERSION}' is not a vMAJOR.MINOR.PATCH tag; refusing to publish."; exit 1 ;;
+          esac
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Publishing version: ${VERSION}"
+          echo "num=${NUM}" >> "$GITHUB_OUTPUT"
+          echo "Publishing ${VERSION} as image tag ${NUM}"
 
-      - name: Fetch obfuscated JAR from aito-core release
+      # The runtime — Dockerfile, entrypoint, licence validation — comes from
+      # aito-core at this exact tag, so the published image cannot disagree
+      # with the code that was released.
+      - name: Check out aito-core docker/free at the release tag
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CORE_REPO }}
+          ref: ${{ steps.ver.outputs.version }}
+          token: ${{ secrets.AITO_CORE_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          sparse-checkout: docker/free
+          sparse-checkout-cone-mode: false
+          path: core
+
+      - name: Fetch obfuscated JAR from the aito-core release
         env:
           GH_TOKEN: ${{ secrets.AITO_CORE_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          # AITO_CORE_RELEASE_TOKEN is a PAT with read access to AitoDotAI/aito-core
-          # releases. Only required if aito-core is a private repo; if public,
-          # GITHUB_TOKEN works.
+          set -euo pipefail
+          # AITO_CORE_RELEASE_TOKEN is a PAT with read access to aito-core
+          # releases; GITHUB_TOKEN suffices only while aito-core is public.
           VERSION="${{ steps.ver.outputs.version }}"
-          mkdir -p ./build
+          CTX=core/docker/free
           gh release download "${VERSION}" \
             --repo "${CORE_REPO}" \
             --pattern 'aitoai-free-obf.jar' \
-            --dir ./build/
+            --dir "${CTX}/"
 
-          # Verify checksum if the .sha256 sidecar is present.
-          if gh release download "${VERSION}" --repo "${CORE_REPO}" \
-               --pattern 'aitoai-free-obf.jar.sha256' --dir ./build/ 2>/dev/null; then
-            (cd ./build && sha256sum -c aitoai-free-obf.jar.sha256)
-          fi
+          # The checksum sidecar is not optional. Downloading a JAR over the
+          # network and building a public image out of it unverified is not
+          # something to do quietly when the sidecar happens to be missing.
+          gh release download "${VERSION}" --repo "${CORE_REPO}" \
+            --pattern 'aitoai-free-obf.jar.sha256' --dir "${CTX}/"
+          (cd "${CTX}" && sha256sum -c aitoai-free-obf.jar.sha256)
 
-          # Dockerfile expects the JAR at ./aitoai-free.jar in the context.
-          cp ./build/aitoai-free-obf.jar ./aitoai-free.jar
+          # aito-core's Dockerfile copies ./aitoai-free.jar from the context.
+          mv "${CTX}/aitoai-free-obf.jar" "${CTX}/aitoai-free.jar"
 
       - name: Build image
         run: |
+          set -euo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
+          NUM="${{ steps.ver.outputs.num }}"
+          # aito-core's Dockerfile labels the image as aito-core. The published
+          # artefact is this repository's, so the public-facing metadata is
+          # reapplied here — and the version label is what the :latest guard
+          # below reads back on the next release.
           docker build \
+            --label "maintainer=Aito <support@aito.ai>" \
+            --label "description=Aito - the predictive database. Free for development, licensed for production." \
+            --label "org.opencontainers.image.source=https://github.com/aitohq/aito" \
+            --label "org.opencontainers.image.documentation=https://aito.ai/docs" \
+            --label "org.opencontainers.image.vendor=aito.ai" \
+            --label "org.opencontainers.image.version=${NUM}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             -t "aito-build:${GITHUB_SHA}" \
-            -t "aito-build:${VERSION}" \
-            .
+            core/docker/free
 
+      # The old smoke test booted the container, waited for /status — which
+      # does not exist and returns 404, so the wait always timed out and was
+      # ignored — and then read /status/limits. Every one of those steps
+      # succeeds against an image with no authentication at all, which is how
+      # v1.0.1 passed. See scripts/smoke-test.sh; it goes red on v1.0.1.
       - name: Smoke test
-        run: |
-          # Boot the image with no license key, hit the health endpoint,
-          # then stop. Catches obvious packaging regressions before pushing.
-          docker run -d --name aito-smoke -p 9005:9005 "aito-build:${GITHUB_SHA}"
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:9005/status >/dev/null 2>&1; then
-              echo "Server responded after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-          # Final health check + free-mode confirmation
-          curl -fsS http://127.0.0.1:9005/status/limits | jq .
-          docker logs aito-smoke 2>&1 | grep -E '(Free Mode|Licensed Mode)' || true
-          docker rm -f aito-smoke
+        run: ./scripts/smoke-test.sh "aito-build:${GITHUB_SHA}"
 
       # ---------- GHCR ----------
       - name: Login to GHCR
@@ -107,13 +143,49 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # :latest must never move backwards. Re-running this workflow for an
+      # older tag — to rebuild it, or to fix its metadata — would otherwise
+      # hand every `docker pull aito:latest` an older image, silently.
+      - name: Decide whether :latest should move
+        id: latest
+        run: |
+          set -euo pipefail
+          NUM="${{ steps.ver.outputs.num }}"
+          MOVE=no; WHY=""
+          if docker pull -q "${GHCR_REPO}:latest" >/dev/null 2>&1; then
+            CUR="$(docker inspect "${GHCR_REPO}:latest" \
+                     --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)"
+            if [ -z "${CUR}" ] || [ "${CUR}" = "<no value>" ]; then
+              # No version label means :latest was published before this
+              # workflow existed, i.e. it is 1.0.x. That is not a guess: the
+              # label is added unconditionally by the build step above, so any
+              # image this workflow has ever pushed carries one.
+              MOVE=yes; WHY="current :latest carries no version label, so it predates this workflow"
+            else
+              HIGHEST="$(printf '%s\n%s\n' "${CUR}" "${NUM}" | sort -V | tail -1)"
+              if [ "${HIGHEST}" = "${NUM}" ]; then
+                MOVE=yes; WHY="${NUM} >= published ${CUR}"
+              else
+                MOVE=no;  WHY="${NUM} is older than the published ${CUR}"
+              fi
+            fi
+          else
+            MOVE=yes; WHY="no :latest published yet"
+          fi
+          echo "move=${MOVE}" >> "$GITHUB_OUTPUT"
+          echo "why=${WHY}"   >> "$GITHUB_OUTPUT"
+          echo "::notice::latest move=${MOVE} (${WHY})"
+
       - name: Push to GHCR
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:${VERSION}"
-          docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:latest"
-          docker push "${GHCR_REPO}:${VERSION}"
-          docker push "${GHCR_REPO}:latest"
+          set -euo pipefail
+          NUM="${{ steps.ver.outputs.num }}"
+          docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:${NUM}"
+          docker push "${GHCR_REPO}:${NUM}"
+          if [ "${{ steps.latest.outputs.move }}" = "yes" ]; then
+            docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:latest"
+            docker push "${GHCR_REPO}:latest"
+          fi
 
       # ---------- ECR Public ----------
       - name: Configure AWS credentials
@@ -130,20 +202,29 @@ jobs:
 
       - name: Push to ECR Public
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:${VERSION}"
-          docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:latest"
-          docker push "${ECR_PUBLIC_REPO}:${VERSION}"
-          docker push "${ECR_PUBLIC_REPO}:latest"
+          set -euo pipefail
+          NUM="${{ steps.ver.outputs.num }}"
+          docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:${NUM}"
+          docker push "${ECR_PUBLIC_REPO}:${NUM}"
+          if [ "${{ steps.latest.outputs.move }}" = "yes" ]; then
+            docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:latest"
+            docker push "${ECR_PUBLIC_REPO}:latest"
+          fi
 
       - name: Summary
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
+          NUM="${{ steps.ver.outputs.num }}"
           {
-            echo "## Published"
-            echo ""
-            echo "- \`docker pull ${GHCR_REPO}:${VERSION}\`"
-            echo "- \`docker pull ${ECR_PUBLIC_REPO}:${VERSION}\`"
-            echo ""
-            echo "Both :latest tags also updated."
+            echo "## Published ${NUM}"
+            echo
+            echo "- \`docker pull ${GHCR_REPO}:${NUM}\`"
+            echo "- \`docker pull ${ECR_PUBLIC_REPO}:${NUM}\`"
+            echo
+            if [ "${{ steps.latest.outputs.move }}" = "yes" ]; then
+              echo ":latest moved to ${NUM} — ${{ steps.latest.outputs.why }}."
+            else
+              echo ":latest left alone — ${{ steps.latest.outputs.why }}."
+            fi
+            echo
+            echo "Built from \`${CORE_REPO}\` \`docker/free/\` at \`${{ steps.ver.outputs.version }}\`."
           } >> "$GITHUB_STEP_SUMMARY"
