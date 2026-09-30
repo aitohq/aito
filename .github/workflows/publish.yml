@@ -1,26 +1,34 @@
 name: publish
 
-# Builds and publishes the public Aito Docker image.
+# Builds and publishes the public Aito Docker image, for linux/amd64 AND
+# linux/arm64 (Apple Silicon), as one multi-arch tag.
 #
 # THE IMAGE IS BUILT FROM aito-core's docker/free/ AT THE RELEASE TAG — not
 # from a copy in this repository. The copy that used to live here drifted, and
-# the drift is what shipped v1.0.1 with authentication switched off:
+# the drift is what shipped v1.0.1 with authentication switched off. So this
+# repo owns the release process and the public metadata; aito-core owns the
+# runtime.
 #
-#     this repo's Dockerfile      aito-core docker/free/Dockerfile
-#     KEY_VALIDATION=DISABLED     KEY_VALIDATION=LOCAL
-#     DISABLE_API_KEY_AUTH=true   (absent — keys generated on first boot)
-#     EXPOSE 9005                 EXPOSE 9005 5432
+# EACH ARCHITECTURE IS BUILT AND SMOKE-TESTED NATIVELY: amd64 on ubuntu-latest,
+# arm64 on GitHub's arm runner (ubuntu-24.04-arm, free for public repos). No
+# QEMU: emulation would make the arm64 smoke test slow enough to be skipped,
+# and a JVM image that was only ever cross-built has never actually run on arm.
+# Only then are the per-arch images stitched into one manifest.
 #
-# So this repo now owns the release process and the public metadata, and
-# aito-core owns the runtime. There is one place for a security default to
-# live, and it is next to the code it protects.
+# Stages:
+#   build     (per arch) build -> smoke test -> push <tag>-<arch> to both registries
+#   manifest  stitch <tag> (and :latest, if it should move) from the per-arch
+#             images, then VERIFY both platforms are in the published index
 #
-# Inputs:  the obfuscated free-tier JAR and docker/free/ from the matching
-#          AitoDotAI/aito-core release/tag.
-# Outputs: ghcr.io/aitohq/aito:<version> (+ :latest, if it is the highest)
-#          public.ecr.aws/aitoai/aito:<version> (+ :latest, likewise)
+# On a pull request the same build + smoke runs for BOTH architectures and
+# nothing is pushed, so a change that breaks arm64 is caught before a release.
 #
-# To release: tag this repo (v2.11.0) AFTER the matching aito-core release
+# Outputs (release):
+#   ghcr.io/aitohq/aito:<vX.Y.Z> + :latest          multi-arch (amd64, arm64)
+#   public.ecr.aws/aitoai/aito:<vX.Y.Z> + :latest   multi-arch (amd64, arm64)
+#   ...:<vX.Y.Z>-amd64, ...:<vX.Y.Z>-arm64          the per-arch parts
+#
+# To release: tag this repo (v2.11.2) AFTER the matching aito-core release
 # exists, or use workflow_dispatch with an explicit version.
 
 on:
@@ -29,14 +37,21 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'aito-core tag to package (e.g. v2.11.0)'
+        description: 'aito-core tag to package (e.g. v2.11.2)'
         required: true
         type: string
+  pull_request:
 
 permissions:
   id-token: write   # OIDC for ECR Public role assumption
   contents: read
   packages: write   # GHCR push (same-org)
+
+# LOAD-BEARING: a step with no named shell runs as `bash -e`, with NO pipefail,
+# so `cmd | tee` would take tee's exit status and a failing step would pass.
+defaults:
+  run:
+    shell: bash
 
 env:
   CORE_REPO: AitoDotAI/aito-core
@@ -45,42 +60,64 @@ env:
   GHCR_REPO: ghcr.io/aitohq/aito
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      # false: each architecture must report its OWN result. With fail-fast, an
+      # arm64 failure cancelled the amd64 build mid-way, so the run could not
+      # say whether amd64 was fine. The manifest job still needs BOTH to pass.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Resolve target version
         id: ver
+        env:
+          GH_TOKEN: ${{ secrets.AITO_CORE_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Dry run: the newest aito-core release supplies the JAR, and
+            # docker/free comes from aito-core master, so a PR tests the runtime
+            # the NEXT release will ship.
+            VERSION=$(gh release list --repo "$CORE_REPO" --exclude-drafts --exclude-pre-releases \
+                        --limit 1 --json tagName --jq '.[0].tagName')
+            CORE_REF=master
+            DRY=true
+          elif [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"; CORE_REF="$VERSION"; DRY=false
           else
-            VERSION="${GITHUB_REF_NAME}"
+            VERSION="${GITHUB_REF_NAME}"; CORE_REF="$VERSION"; DRY=false
           fi
-          # The image tag KEEPS the leading v, matching what is already on both
-          # registries: public.ecr.aws/aitoai/aito carries v1.0.1, v1.0.0 and
-          # v0.0.1-rc1 (read from the registry, not assumed). NUM is the bare
-          # semver, used only for the version LABEL and for version comparison,
-          # where a leading v would break `sort -V`.
+          # The image tag KEEPS the leading v, matching what both registries
+          # already carry (v1.0.1, v2.11.1). NUM is the bare semver, used only for
+          # the version label and for the :latest comparison (sort -V).
           NUM="${VERSION#v}"
           case "$NUM" in
             [0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::'${VERSION}' is not a vMAJOR.MINOR.PATCH tag; refusing to publish."; exit 1 ;;
+            *) echo "::error::'${VERSION}' is not a vMAJOR.MINOR.PATCH tag; refusing to build."; exit 1 ;;
           esac
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "num=${NUM}" >> "$GITHUB_OUTPUT"
-          echo "Publishing ${VERSION} as image tag ${VERSION} (semver ${NUM})"
+          {
+            echo "version=${VERSION}"; echo "num=${NUM}"
+            echo "core_ref=${CORE_REF}"; echo "dry=${DRY}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building ${VERSION} for ${{ matrix.arch }} from ${CORE_REPO}@${CORE_REF} (dry run: ${DRY})"
 
-      # The runtime — Dockerfile, entrypoint, licence validation — comes from
-      # aito-core at this exact tag, so the published image cannot disagree
+      # The runtime (Dockerfile, entrypoint, licence validation) comes from
+      # aito-core at the release tag, so the published image cannot disagree
       # with the code that was released.
-      - name: Check out aito-core docker/free at the release tag
+      - name: Check out aito-core docker/free
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CORE_REPO }}
-          ref: ${{ steps.ver.outputs.version }}
+          ref: ${{ steps.ver.outputs.core_ref }}
           token: ${{ secrets.AITO_CORE_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           sparse-checkout: docker/free
           sparse-checkout-cone-mode: false
@@ -91,34 +128,24 @@ jobs:
           GH_TOKEN: ${{ secrets.AITO_CORE_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # AITO_CORE_RELEASE_TOKEN is a PAT with read access to aito-core
-          # releases; GITHUB_TOKEN suffices only while aito-core is public.
           VERSION="${{ steps.ver.outputs.version }}"
           CTX=core/docker/free
-          gh release download "${VERSION}" \
-            --repo "${CORE_REPO}" \
-            --pattern 'aitoai-free-obf.jar' \
-            --dir "${CTX}/"
-
-          # The checksum sidecar is not optional. Downloading a JAR over the
-          # network and building a public image out of it unverified is not
-          # something to do quietly when the sidecar happens to be missing.
+          gh release download "${VERSION}" --repo "${CORE_REPO}" \
+            --pattern 'aitoai-free-obf.jar' --dir "${CTX}/"
+          # The checksum sidecar is not optional: a public image is not built
+          # from a JAR fetched over the network and left unverified.
           gh release download "${VERSION}" --repo "${CORE_REPO}" \
             --pattern 'aitoai-free-obf.jar.sha256' --dir "${CTX}/"
           (cd "${CTX}" && sha256sum -c aitoai-free-obf.jar.sha256)
-
-          # aito-core's Dockerfile copies ./aitoai-free.jar from the context.
           mv "${CTX}/aitoai-free-obf.jar" "${CTX}/aitoai-free.jar"
 
-      - name: Build image
+      - name: Build image (native ${{ matrix.arch }})
         run: |
           set -euo pipefail
-          VERSION="${{ steps.ver.outputs.version }}"
           NUM="${{ steps.ver.outputs.num }}"
-          # aito-core's Dockerfile labels the image as aito-core. The published
-          # artefact is this repository's, so the public-facing metadata is
-          # reapplied here — and the version label is what the :latest guard
-          # below reads back on the next release.
+          # aito-core's Dockerfile labels the image as aito-core; the published
+          # artefact is this repository's, so the public metadata is reapplied.
+          # The version label is what the :latest guard reads back next release.
           docker build \
             --label "maintainer=Aito <support@aito.ai>" \
             --label "description=Aito - the predictive database. Free for development, licensed for production." \
@@ -129,16 +156,62 @@ jobs:
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             -t "aito-build:${GITHUB_SHA}" \
             core/docker/free
+          ARCH=$(docker image inspect "aito-build:${GITHUB_SHA}" --format '{{.Architecture}}')
+          [ "$ARCH" = "${{ matrix.arch }}" ] || { echo "::error::built ${ARCH}, expected ${{ matrix.arch }}"; exit 1; }
+          echo "built linux/${ARCH}"
 
-      # The old smoke test booted the container, waited for /status — which
-      # does not exist and returns 404, so the wait always timed out and was
-      # ignored — and then read /status/limits. Every one of those steps
-      # succeeds against an image with no authentication at all, which is how
-      # v1.0.1 passed. See scripts/smoke-test.sh; it goes red on v1.0.1.
-      - name: Smoke test
+      # The same ten-plus assertions on EACH architecture: auth really enforced,
+      # read-only really read-only, pgwire, free limits, licence path, the
+      # engine's Vector/$nearest/$semantic surface, key persistence.
+      - name: Smoke test (native ${{ matrix.arch }})
         run: ./scripts/smoke-test.sh "aito-build:${GITHUB_SHA}"
 
-      # ---------- GHCR ----------
+      - name: Login to GHCR
+        if: steps.ver.outputs.dry != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials
+        if: steps.ver.outputs.dry != 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ECR_PUBLIC_ROLE }}
+          aws-region: us-east-1
+          role-session-name: aitohq-aito-publish-${{ matrix.arch }}
+
+      - name: Login to ECR Public
+        if: steps.ver.outputs.dry != 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      - name: Push the ${{ matrix.arch }} part
+        if: steps.ver.outputs.dry != 'true'
+        run: |
+          set -euo pipefail
+          T="${{ steps.ver.outputs.version }}-${{ matrix.arch }}"
+          for repo in "${GHCR_REPO}" "${ECR_PUBLIC_REPO}"; do
+            docker tag "aito-build:${GITHUB_SHA}" "${repo}:${T}"
+            docker push "${repo}:${T}"
+          done
+
+  manifest:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Resolve target version
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"; [ -n "$VERSION" ] || VERSION="${GITHUB_REF_NAME}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "num=${VERSION#v}"   >> "$GITHUB_OUTPUT"
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -146,9 +219,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # :latest must never move backwards. Re-running this workflow for an
-      # older tag — to rebuild it, or to fix its metadata — would otherwise
-      # hand every `docker pull aito:latest` an older image, silently.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ECR_PUBLIC_ROLE }}
+          aws-region: us-east-1
+          role-session-name: aitohq-aito-publish-manifest
+
+      - name: Login to ECR Public
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      # :latest must never move backwards. Re-running this workflow for an older
+      # tag would otherwise hand every `docker pull aito:latest` an older image.
+      # The guard reads org.opencontainers.image.version back off the published
+      # :latest (the runner's own platform of it) and moves only for the highest.
       - name: Decide whether :latest should move
         id: latest
         run: |
@@ -159,18 +245,11 @@ jobs:
             CUR="$(docker inspect "${GHCR_REPO}:latest" \
                      --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)"
             if [ -z "${CUR}" ] || [ "${CUR}" = "<no value>" ]; then
-              # No version label means :latest was published before this
-              # workflow existed, i.e. it is 1.0.x. That is not a guess: the
-              # label is added unconditionally by the build step above, so any
-              # image this workflow has ever pushed carries one.
               MOVE=yes; WHY="current :latest carries no version label, so it predates this workflow"
             else
               HIGHEST="$(printf '%s\n%s\n' "${CUR}" "${NUM}" | sort -V | tail -1)"
-              if [ "${HIGHEST}" = "${NUM}" ]; then
-                MOVE=yes; WHY="${NUM} >= published ${CUR}"
-              else
-                MOVE=no;  WHY="${NUM} is older than the published ${CUR}"
-              fi
+              if [ "${HIGHEST}" = "${NUM}" ]; then MOVE=yes; WHY="${NUM} >= published ${CUR}"
+              else MOVE=no; WHY="${NUM} is older than the published ${CUR}"; fi
             fi
           else
             MOVE=yes; WHY="no :latest published yet"
@@ -179,56 +258,39 @@ jobs:
           echo "why=${WHY}"   >> "$GITHUB_OUTPUT"
           echo "::notice::latest move=${MOVE} (${WHY})"
 
-      - name: Push to GHCR
+      - name: Stitch and verify the multi-arch manifests
         run: |
           set -euo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
-          docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:${VERSION}"
-          docker push "${GHCR_REPO}:${VERSION}"
-          if [ "${{ steps.latest.outputs.move }}" = "yes" ]; then
-            docker tag "aito-build:${GITHUB_SHA}" "${GHCR_REPO}:latest"
-            docker push "${GHCR_REPO}:latest"
-          fi
-
-      # ---------- ECR Public ----------
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.ECR_PUBLIC_ROLE }}
-          aws-region: us-east-1
-          role-session-name: aitohq-aito-publish
-
-      - name: Login to ECR Public
-        uses: aws-actions/amazon-ecr-login@v2
-        with:
-          registry-type: public
-
-      - name: Push to ECR Public
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.ver.outputs.version }}"
-          docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:${VERSION}"
-          docker push "${ECR_PUBLIC_REPO}:${VERSION}"
-          if [ "${{ steps.latest.outputs.move }}" = "yes" ]; then
-            docker tag "aito-build:${GITHUB_SHA}" "${ECR_PUBLIC_REPO}:latest"
-            docker push "${ECR_PUBLIC_REPO}:latest"
-          fi
+          for repo in "${GHCR_REPO}" "${ECR_PUBLIC_REPO}"; do
+            tags=(-t "${repo}:${VERSION}")
+            [ "${{ steps.latest.outputs.move }}" = "yes" ] && tags+=(-t "${repo}:latest")
+            docker buildx imagetools create "${tags[@]}" \
+              "${repo}:${VERSION}-amd64" "${repo}:${VERSION}-arm64"
+            # Verify what was PUBLISHED, not what was requested: both platforms
+            # must be in the index the registry now serves.
+            PLATS=$(docker buildx imagetools inspect --raw "${repo}:${VERSION}" \
+              | jq -r '[.manifests[].platform | select(.os=="linux") | .architecture] | sort | join(",")')
+            if [ "$PLATS" != "amd64,arm64" ]; then
+              echo "::error::${repo}:${VERSION} serves platforms '${PLATS}', expected amd64,arm64"; exit 1
+            fi
+            echo "${repo}:${VERSION} -> ${PLATS}"
+          done
 
       - name: Summary
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
-          NUM="${{ steps.ver.outputs.num }}"
           {
-            echo "## Published ${VERSION}"
+            echo "## Published ${VERSION} (linux/amd64 + linux/arm64)"
             echo
             echo "- \`docker pull ${GHCR_REPO}:${VERSION}\`"
             echo "- \`docker pull ${ECR_PUBLIC_REPO}:${VERSION}\`"
             echo
             if [ "${{ steps.latest.outputs.move }}" = "yes" ]; then
-              echo ":latest moved to ${NUM} — ${{ steps.latest.outputs.why }}."
+              echo ":latest moved to ${VERSION} — ${{ steps.latest.outputs.why }}."
             else
               echo ":latest left alone — ${{ steps.latest.outputs.why }}."
             fi
             echo
-            echo "Built from \`${CORE_REPO}\` \`docker/free/\` at \`${{ steps.ver.outputs.version }}\`."
+            echo "Each architecture was built and smoke-tested on its own native runner."
           } >> "$GITHUB_STEP_SUMMARY"
