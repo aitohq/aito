@@ -62,7 +62,10 @@ env:
 jobs:
   build:
     strategy:
-      fail-fast: true
+      # false: each architecture must report its OWN result. With fail-fast, an
+      # arm64 failure cancelled the amd64 build mid-way, so the run could not
+      # say whether amd64 was fine. The manifest job still needs BOTH to pass.
+      fail-fast: false
       matrix:
         include:
           - arch: amd64
