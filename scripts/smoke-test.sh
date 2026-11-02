@@ -50,20 +50,22 @@ docker run -d --name "$NAME" \
 
 booted=0
 for _ in $(seq 1 60); do
-    # NB: /status does not exist on this server — it 404s. /status/limits is
-    # the public one. The old workflow waited on /status, never saw it come
-    # up, and simply fell out of the loop and carried on.
-    if curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/status/limits" 2>/dev/null; then booted=1; break; fi
+    # Wait on /version: it needs no key on every release. /status 404s (the
+    # old workflow waited on it, never saw it come up, and carried on), and
+    # /status/limits needs the read key from v2.12.0, so a keyless wait on it
+    # times out. The entrypoint prints the keys before Java starts, so any
+    # HTTP answer means the log below already holds them.
+    if curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/version" 2>/dev/null; then booted=1; break; fi
     # A container that has already exited will never answer; stop waiting.
     if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" != "true" ]; then break; fi
     sleep 1
 done
 if [ "$booted" != "1" ]; then
-    echo "FATAL: no answer on /status/limits after 60s. Last 40 log lines:"
+    echo "FATAL: no answer on /version after 60s. Last 40 log lines:"
     docker logs "$NAME" 2>&1 | tail -40
     exit 2
 fi
-ok "container boots and answers on :9005/status/limits"
+ok "container boots and answers on :9005/version"
 
 LOGS="$(docker logs "$NAME" 2>&1)"
 
@@ -153,6 +155,8 @@ else
 fi
 
 # ------------------------------------------------- 6. free-tier limits ------
+# Sends the read-write key: /status/limits needs a key from v2.12.0 and
+# ignores one on earlier releases.
 limits="$(curl -s ${RW:+-H "x-api-key: ${RW}"} "http://127.0.0.1:${PORT}/status/limits" 2>/dev/null)"
 # Parsed with jq, not sed: "rowsTotal" appears under BOTH .limits and .usage,
 # and a greedy regex picks up .usage.rowsTotal (0 on a fresh boot) and reports
@@ -252,7 +256,7 @@ fi
 # ------------------------------------- 9. keys survive a restart ------------
 docker restart "$NAME" >/dev/null 2>&1
 for _ in $(seq 1 60); do
-    curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/status" 2>/dev/null && break
+    curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/version" 2>/dev/null && break
     sleep 1
 done
 if [ -n "$RW" ]; then
